@@ -246,16 +246,16 @@ int KvsStore::_collection_list(KvsCollection *c, const ghobject_t &start,
 			lck.lock();
 		}
 
-        /*TR << " range " << print_kvssd_key(temp_start_key.key, temp_start_key.length)
+        TR << " range " << print_kvssd_key(temp_start_key.key, temp_start_key.length)
            << " to " << print_kvssd_key(temp_end_key.key, temp_end_key.length) << " and "
            << print_kvssd_key(start_key.key, start_key.length) << " to "
-           << print_kvssd_key(end_key.key, end_key.length) << " start " << start;*/
-        {
+           << print_kvssd_key(end_key.key, end_key.length) << " start " << start;
+        /*{
             auto it = db.get_iterator(GROUP_PREFIX_ONODE);
             //int index = 0;
             bool a = false,b = false, c = false, d = false;
             while (it->valid()) {
-                kv_key key = it->key();
+                //kv_key key = it->key();
 
                 if (!a && db.is_key_ge(it->key(), temp_start_key)) {
                     //TR << "range temp start key " << print_kvssd_key(temp_start_key.key, temp_start_key.length);
@@ -277,13 +277,13 @@ int KvsStore::_collection_list(KvsCollection *c, const ghobject_t &start,
                     d = true;
                 }
 
-                ghobject_t oid;
-                construct_onode_ghobject_t(cct, key, &oid);
+                //ghobject_t oid;
+                //construct_onode_ghobject_t(cct, key, &oid);
                 //TR << "iter  keys #"<< index++ << "= " << print_kvssd_key(key.key, key.length) << ", oid = " << oid;
 
                 it->next();
             }
-        }
+        }*/
 		it = db.get_iterator(GROUP_PREFIX_ONODE);
 		if (start == ghobject_t() || start == c->cid.get_min_hobj()) {
 			it->upper_bound(temp_start_key);
@@ -342,17 +342,19 @@ int KvsStore::_collection_list(KvsCollection *c, const ghobject_t &start,
             TR << __func__ << " key " << it->key().key << ", length " << it->key().length;
 			TR << __func__ << " key " << print_kvssd_key(it->key().key, it->key().length);
 			kv_key key = it->key();
-			ghobject_t oid;
-			construct_onode_ghobject_t(cct, key, &oid);
-            //TR << "object hash = " << oid.get_nibblewise_key_u32() << ", end hash " << 67108864 << " ok? " << (oid.get_nibblewise_key_u32() < 67108864);
-			ceph_assert(r == 0);
-			if (ls->size() >= (unsigned) max) {
-                //TR << __func__ << " reached max " << max;
-				*pnext = oid;
-				set_next = true;
-				break;
-			}
-			ls->push_back(oid);
+			if (key.length > 0) {
+                ghobject_t oid;
+                construct_onode_ghobject_t(cct, key, &oid);
+                //TR << "object hash = " << oid.get_nibblewise_key_u32() << ", end hash " << 67108864 << " ok? " << (oid.get_nibblewise_key_u32() < 67108864);
+                ceph_assert(r == 0);
+                if (ls->size() >= (unsigned) max) {
+                    //TR << __func__ << " reached max " << max;
+                    *pnext = oid;
+                    set_next = true;
+                    break;
+                }
+                ls->push_back(oid);
+            }
             //TR << __func__ << "ls size = " << ls->size() << "\n";
 			it->next();
 		}
