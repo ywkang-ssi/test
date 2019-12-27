@@ -335,6 +335,10 @@ public:
 		return 0;
 	}
 
+    void remove_all() {
+	    pool.remove_all();
+	}
+
 	int remove(char *userkey, int keylength)
 	{
 		if (root == 0) return -1;
@@ -1125,18 +1129,27 @@ public:
 	template<class InputIt1, class InputIt2>
 	inline int kvkey_lex_compare(InputIt1 first1, InputIt1 last1, InputIt2 first2, InputIt2 last2)
 	{
-	    for ( ; (first1 != last1) && (first2 != last2); ++first1, (void) ++first2 ) {
-	        if (*first1 < *first2) return -1;
-	        if (*first2 < *first1) return +1;
-	    }
-
-	    if (first1 == last1) {
-	    	if (first2 == last2) return 0;
-	    	return -1;
-	    }
-
-	    return +1;
+        return kvkey_lex_compare2((unsigned char*)first1,(unsigned char*)last1, (unsigned char*)first2, (unsigned char*)last2 );
 	}
+
+
+    inline int kvkey_lex_compare2(unsigned char* first1, unsigned char* last1, unsigned char* first2, unsigned char* last2)
+    {
+        for ( ; (first1 != last1) && (first2 != last2); ++first1, (void) ++first2 ) {
+            if (*first1 < *first2) {
+                return -1;
+            }
+            if (*first2 < *first1) {
+                return +1;
+            }
+        }
+
+        if (first1 == last1) {
+            if (first2 == last2) return 0;
+            return -1;
+        }
+        return +1;
+    }
 
 	inline bool is_same(const char *k1, const int k1_length, bp_addr_t &addr) {
 		char *k2;
@@ -1218,14 +1231,24 @@ private:
 	friend class bptree_iterator_impl;
 
 	class bptree_iterator_impl: public bptree_iterator {
+        bp_addr_t root_addr;
+        bptree *root_tree;
 	public:
 		bptree_iterator_impl(bptree *tree_, int keyindex_ = 0, bp_addr_t nodeaddr_ = 0):
 			bptree_iterator(tree_, keyindex_, nodeaddr_)
 		{
 		    //TR << "bptree iterator: index = " << keyindex << ", nodeaddr == " << nodeaddr ;
+            root_tree = tree_;
+            root_addr = nodeaddr_;
 		    if (nodeaddr == 0) {
 		        end();
 		    }
+		}
+
+		inline void reset() {
+            tree = root_tree;
+            nodeaddr = root_addr;
+            keyindex = 0;
 		}
 
 		virtual void move_next(const long int movement) {
@@ -1276,6 +1299,9 @@ private:
 
 		virtual void begin() {
 		    //TR<< "BEGIN" ;
+            reset();
+            if (tree == 0) return;
+
 			lower_bound("", 0);
 		}
 
@@ -1285,7 +1311,8 @@ private:
 
 
 		virtual void lower_bound(const char *key, int length) {
-			if (is_end() || tree->root == 0 ) { end(); return; }
+            reset();
+            if (tree == 0) return;
 
 			bptree_node *node = tree->root;
 			keyindex = -1;
@@ -1318,7 +1345,9 @@ private:
 		}
 
 		virtual void upper_bound(const char *key, int length) {
-			if (is_end() || tree->root == 0) { end(); return; }
+			reset();
+            if (tree == 0) return;
+
 			bool same;
 			bptree_node *node = tree->root;
 			keyindex = -1;
