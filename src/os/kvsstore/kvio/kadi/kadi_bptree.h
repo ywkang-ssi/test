@@ -252,17 +252,21 @@ public:
 	{
 	    FTRACE
 
+	    TR << "fetch meta";
 		// create or fetch root node
 		meta = pool.get_meta();
 		if (meta->isnew) {
 			root = 0;
 		}
 		else {
+            TR << "meta node is being fetched: " << pool.get_meta()->get_root_addr();
 			root = pool.fetch_tree_node(pool.get_meta()->get_root_addr());
 			if (root == 0) {
 			    std::cerr << "cannot find the root node" << std::endl;
 			}
 		}
+
+        TR << "fetch meta done";
 
 	}
 
@@ -1168,7 +1172,9 @@ public:
 	}
 
 	inline bool is_larger(const char *k1, const int k1_length, const char *k2, const int k2_length) {
-		return (kvkey_lex_compare(k1, k1+k1_length, k2, k2+k2_length) > 0);
+	    //TR << "k1 is larger than k2: k1 " << print_kvssd_key(k1, k1_length) << ", k2 = "<< print_kvssd_key(k2, k2_length) << ", result = " << kvkey_lex_compare(k1, k1+k1_length, k2, k2+k2_length);
+
+        return (kvkey_lex_compare(k1, k1+k1_length, k2, k2+k2_length) > 0);
 	}
 
 	inline int strcompare(const char *k1, const int k1_length, const char *k2, const int k2_length) {

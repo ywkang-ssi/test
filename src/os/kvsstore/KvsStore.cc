@@ -116,13 +116,8 @@ void KvsStore::_kv_index_thread() {
 	derr << "index thread..." << dendl;
 	// load pages from the AOL
 	static double index_interval_us = 1000000.0; // 1 second
-	std::unique_lock<std::mutex> lck(compact_lock,std::defer_lock);
-
 	while(true) {
-		if (lck.try_lock()) {
-			//db.compact();
-			lck.unlock();
-		}
+	    //db.compact();
 
         {
             std::unique_lock l (kv_lock );
@@ -150,24 +145,24 @@ static void get_coll_key_range(const coll_t& cid, int bits, kv_key *temp_start, 
 	s_key->prefix = GROUP_PREFIX_ONODE;
 	e_key->prefix = GROUP_PREFIX_ONODE;
 	temp_s_key->prefix = GROUP_PREFIX_ONODE;
-	temp_s_key->prefix = GROUP_PREFIX_ONODE;
+	temp_e_key->prefix = GROUP_PREFIX_ONODE;
 
 	spg_t pgid;
 	if (cid.is_pg(&pgid)) {
 		// shard id
 
-		s_key->shardid 	    = int8_t(pgid.shard);
+		s_key->shardid 	    = int8_t(pgid.shard) + 0x80;
 		e_key->shardid 		= s_key->shardid;
 		temp_s_key->shardid = s_key->shardid;
-		temp_e_key->shardid = temp_s_key->shardid;
+		temp_e_key->shardid = s_key->shardid;
 
 		// poolid
 		s_key->poolid = pgid.pool() + 0x8000000000000000ull;
 		e_key->poolid = s_key->poolid;
 		temp_s_key->poolid = (-2ll - pgid.pool()) + 0x8000000000000000ull;
-		temp_e_key->poolid = temp_s_key->poolid;
+        temp_e_key->poolid = temp_s_key->poolid;
 
-		// hash, start key
+        // hash, start key
 		uint32_t reverse_hash = hobject_t::_reverse_bits(pgid.ps());
 		s_key->bitwisekey = reverse_hash;
 		temp_s_key->bitwisekey = reverse_hash;
@@ -183,7 +178,7 @@ static void get_coll_key_range(const coll_t& cid, int bits, kv_key *temp_start, 
 
 	} else {
 		// shardid
-		s_key->shardid 	    = int8_t(shard_id_t::NO_SHARD);
+		s_key->shardid 	    = int8_t(shard_id_t::NO_SHARD) + 0x80;
 		e_key->shardid 		= s_key->shardid;
 
 		// poolid
@@ -238,55 +233,13 @@ int KvsStore::_collection_list(KvsCollection *c, const ghobject_t &start,
 						<< print_kvssd_key(end_key.key, end_key.length) << " start " << start << dendl;
 
 	{
-		std::unique_lock<std::mutex> lck(compact_lock,std::defer_lock);
-
-		if (lck.try_lock()) {
-
-		    TR << "compact begins .......................";
-			db.compact();
-            TR << "compact finished .......................";
-		} else {
-			lck.lock();
-		}
+        db.compact();
 
         TR << " range " << print_kvssd_key(temp_start_key.key, temp_start_key.length)
            << " to " << print_kvssd_key(temp_end_key.key, temp_end_key.length) << " and "
            << print_kvssd_key(start_key.key, start_key.length) << " to "
            << print_kvssd_key(end_key.key, end_key.length) << " start " << start;
-        /*{
-            auto it = db.get_iterator(GROUP_PREFIX_ONODE);
-            //int index = 0;
-            bool a = false,b = false, c = false, d = false;
-            while (it->valid()) {
-                //kv_key key = it->key();
 
-                if (!a && db.is_key_ge(it->key(), temp_start_key)) {
-                    //TR << "range temp start key " << print_kvssd_key(temp_start_key.key, temp_start_key.length);
-                    a = true;
-                }
-
-                if (!b && db.is_key_ge(it->key(), start_key)) {
-                    //TR << "range start key " << print_kvssd_key(start_key.key, start_key.length);
-                    b = true;
-                }
-
-                if (!c && db.is_key_ge(it->key(), temp_end_key)) {
-                    //TR << "range temp end key " << print_kvssd_key(temp_end_key.key, temp_end_key.length);
-                    c = true;
-                }
-
-                if (!d && db.is_key_ge(it->key(), end_key)) {
-                    //TR << "range temp end key " << print_kvssd_key(end_key.key, end_key.length);
-                    d = true;
-                }
-
-                //ghobject_t oid;
-                //construct_onode_ghobject_t(cct, key, &oid);
-                //TR << "iter  keys #"<< index++ << "= " << print_kvssd_key(key.key, key.length) << ", oid = " << oid;
-
-                it->next();
-            }
-        }*/
 		it = db.get_iterator(GROUP_PREFIX_ONODE);
 		if (start == ghobject_t() || start == c->cid.get_min_hobj()) {
 			it->upper_bound(temp_start_key);
@@ -320,6 +273,7 @@ int KvsStore::_collection_list(KvsCollection *c, const ghobject_t &start,
 
 		while (true) {
 			if (!it->valid() || db.is_key_ge(it->key(), pend)) {
+                TR << "iter: key not valid ";
 				if (!it->valid())
 					dout(20) << __func__ << " iterator not valid (end of db?)" << dendl;
 				else {
@@ -331,7 +285,7 @@ int KvsStore::_collection_list(KvsCollection *c, const ghobject_t &start,
 					if (end.hobj.is_temp()) {
 						break;
 					}
-
+                    TR << "upper bound normal key  ";
 					dout(30) << __func__ << " switch to non-temp namespace" << dendl;
 
 					temp = false;
@@ -340,29 +294,32 @@ int KvsStore::_collection_list(KvsCollection *c, const ghobject_t &start,
 					dout(30) << __func__ << " pend " << print_kvssd_key(pend.key, pend.length) << dendl;
 					continue;
 				}
+                TR << "iter: exit ";
 				break;
 			}
-            TR << __func__ << " key " << it->key().key << ", length " << it->key().length;
+            TR << __func__ << " key " << it->key().key << ", length " << (int)it->key().length;
 			TR << __func__ << " key " << print_kvssd_key(it->key().key, it->key().length);
 			kv_key key = it->key();
 			if (key.length > 0) {
                 ghobject_t oid;
                 construct_onode_ghobject_t(cct, key, &oid);
-                //TR << "object hash = " << oid.get_nibblewise_key_u32() << ", end hash " << 67108864 << " ok? " << (oid.get_nibblewise_key_u32() < 67108864);
+                TR << __func__ << " oid = " << oid << max;
                 ceph_assert(r == 0);
                 if (ls->size() >= (unsigned) max) {
-                    //TR << __func__ << " reached max " << max;
+                    
                     *pnext = oid;
                     set_next = true;
                     break;
                 }
                 ls->push_back(oid);
             }
-            //TR << __func__ << "ls size = " << ls->size() << "\n";
+            TR << __func__ << "ls size = " << ls->size() << "\n";
 			it->next();
 		}
+        TR << __func__ << "iter finished" << "\n";
 	}
 out:
+    TR << __func__ << "iter returns" << "\n";
 	if (!set_next) {
 		*pnext = ghobject_t::get_max();
 	}
@@ -374,23 +331,17 @@ static int open_count =0;
 int KvsStore::_open_collections() {
 
 	FTRACE
-	std::unique_lock<std::mutex> lck(compact_lock,std::defer_lock);
 
-	if (lck.try_lock()) {
-		db.compact();
-	} else {
-		lck.lock();
-	}
+	db.compact();
 
     KvsIterator *it = db.get_iterator(GROUP_PREFIX_COLL);
     for (it->begin(); it->valid(); it->next()) {
         coll_t cid;
         kv_key collkey = it->key();
-        //TR << "returned key : " << print_kvssd_key(std::string((char *) collkey.key, collkey.length)) ;
+        TR << "returned key : " << print_kvssd_key(std::string((char *) collkey.key, collkey.length)) ;
         std::string name((char *) collkey.key + sizeof(kvs_coll_key), collkey.length - sizeof(kvs_coll_key));
-        //TR << "found collection: " << name ;
+        TR << "found collection: " << name ;
         if (cid.parse(name)) {
-            //TR << "CID parse" ;
             auto c = ceph::make_ref<KvsCollection>(this,
                                                    onode_cache_shards[cid.hash_to_shard(onode_cache_shards.size())],
                                                    buffer_cache_shards[cid.hash_to_shard(
@@ -417,6 +368,7 @@ int KvsStore::_open_collections() {
             coll_map[cid] = c;
 
         } else {
+
             derr << __func__ << " unrecognized collection " << print_kvssd_key(it->key().key, it->key().length)
                  << dendl;
             //ceph_abort_msg("unrecognized collection");
@@ -505,6 +457,10 @@ void KvsStore::_txc_write_nodes(KvsTransContext *txc) {
 		db.add_onode(&txc->ioc, o->oid, bl);
 
 		o->flushing_count++;
+        {
+            std::lock_guard<std::mutex> l(o->flush_lock);
+            o->flush_txns.insert(txc);
+        }
 	}
 
 	// objects we modified but didn't affect the onode
@@ -512,6 +468,10 @@ void KvsStore::_txc_write_nodes(KvsTransContext *txc) {
 	while (p != txc->modified_objects.end()) {
 		if (txc->onodes.count(*p) == 0) {
 			(*p)->flushing_count++;
+            {
+                std::lock_guard<std::mutex> l((*p)->flush_lock);
+                (*p)->flush_txns.insert(txc);
+            }
 			++p;
 		} else {
 			// remove dups with onodes list to avoid problems in _txc_finish
@@ -526,16 +486,6 @@ void KvsStore::_txc_write_nodes(KvsTransContext *txc) {
 		ceph_abort();
 	}
 
-	// decrease flushing count
-	for (auto ls : { &txc->onodes, &txc->modified_objects }) {
-		for (auto& o : *ls) {
-		  dout(20) << __func__ << " onode " << o << " had " << o->flushing_count << dendl;
-		  if (--o->flushing_count == 0 && o->waiting_count.load()) {
-			std::lock_guard l(o->flush_lock);
-			o->flush_cond.notify_all();
-		  }
-		}
-	}
 
 }
 
@@ -549,7 +499,7 @@ void KvsStore::_txc_state_proc(KvsTransContext *txc) {
 		switch (txc->state) {
 
 		case KvsTransContext::STATE_PREPARE:
-            TR << "TXC" << (void*) txc << ", STATE: PREPARE";
+            TR << "TXC " << (void*) txc << ", STATE: PREPARE";
             txc->state = KvsTransContext::STATE_AIO_WAIT;
             //TR << "txc " << (void*)txc << ", state = " << txc->state ;
 
@@ -557,14 +507,14 @@ void KvsStore::_txc_state_proc(KvsTransContext *txc) {
 				_txc_aio_submit(txc);
 				return;
 			} else {
-                TR << "TXC" << (void*) txc << "is EMPTY";
+                TR << "TXC " << (void*) txc << "is EMPTY";
 			}
 
 			break; // fall through
 
 		case KvsTransContext::STATE_AIO_WAIT:
 			// io finished
-            TR << "TXC" << (void*) txc << ", STATE: IOFINISHED -> FINALIZE";
+            TR << "TXC " << (void*) txc << ", STATE: IOFINISHED -> FINALIZE";
             {
                 std::unique_lock l(kv_finalize_lock);
                 kv_committing_to_finalize.push_back(txc);
@@ -729,6 +679,9 @@ void KvsStore::_txc_finish(KvsTransContext *txc) {
 void KvsStore::_txc_release_alloc(KvsTransContext *txc) {
 	FTRACE
 	KvsIoContext *ioc = &txc->ioc;
+
+
+
 	{
 		std::unique_lock<std::mutex> lk ( ioc->running_aio_lock );
 		// release memory
@@ -741,9 +694,9 @@ void KvsStore::_txc_release_alloc(KvsTransContext *txc) {
                 delete ior->data;
             }
 
-            if (ior->raw_data) {
-                free(ior->raw_data);
-            }
+            //if (ior->raw_data) {
+            //    free(ior->raw_data);
+            //}
 
             if (ior->key) {
                 free(ior->key->key);
@@ -1164,6 +1117,7 @@ int KvsStore::_zero(KvsTransContext *txc, CollectionRef &c, OnodeRef &o,
 	dout(15) << __func__ << " " << c->cid << " " << o->oid << " 0x"
 						<< std::hex << offset << "~" << length << std::dec
 						<< dendl;
+
 	int r = _do_zero(txc, c, o, offset, length);
 	dout(10) << __func__ << " " << c->cid << " " << o->oid << " 0x"
 						<< std::hex << offset << "~" << length << std::dec
@@ -1442,6 +1396,7 @@ int KvsStore::_remove_collection(KvsTransContext *txc, const coll_t &cid,
 	FTRACE
 	int r;
     if (*c == 0) return 0;
+
 	(*c)->flush_all_but_last();
 	{
 		std::unique_lock l(coll_lock);
@@ -2068,21 +2023,18 @@ int KvsStore::_open_db(bool create) {
         return -1;
     }
 
-    if (create) { // workaround for fw issue
-        bptree onode_tree(&db.get_adi()->adi, 1, GROUP_PREFIX_ONODE);
-        onode_tree.remove_all();
-        bptree coll_tree(&db.get_adi()->adi, 1, GROUP_PREFIX_COLL);
-        coll_tree.remove_all();
-    }
-
-
     this->db.close_iterators();
 
 	kv_callback_thread.create("kvscallback");
 	kv_index_thread.create("kvsindex");
 	kv_finalize_thread.create("kvsfinalize");
 
-
+    /*if (create) { // workaround for fw issue
+        bptree onode_tree(&db.get_adi()->adi, 1, GROUP_PREFIX_ONODE);
+        onode_tree.remove_all();
+        bptree coll_tree(&db.get_adi()->adi, 1, GROUP_PREFIX_COLL);
+        coll_tree.remove_all();
+    }*/
 
 	return 0;
 }
@@ -2419,7 +2371,7 @@ int KvsStore::statfs(struct store_statfs_t *buf, osd_alert_list_t *alerts) {
 	double utilization;
 
 	this->db.get_freespace(bytesused, capacity, utilization);
-	buf->total = capacity;
+	buf->total = capacity ;
 	buf->available = capacity - bytesused;
 
 	//TR << "total = " << buf->total << ", available " << buf->available ;
@@ -2579,71 +2531,16 @@ int KvsStore::read(CollectionHandle &c_, const ghobject_t &oid, uint64_t offset,
 
 }
 
-void KvsStore::_do_read_stripe(OnodeRef o, uint64_t offset, bufferlist *pbl)
-{
-    map<uint64_t,bufferlist>::iterator p = o->pending_stripes.find(offset);
-    if (p == o->pending_stripes.end()) {
-        const int pgid = offset >> KVS_OBJECT_SPLIT_SHIFT;
-        uint32_t nread = KVS_OBJECT_SPLIT_SIZE;
-
-
-        buffer::ptr bp = buffer::create_malloc(nread);
-
-        char *dst = bp.c_str();
-        int r = db.read_block(o->oid, pgid, dst, nread);
-        //TR << "bp content: pg " << pgid << ", bytes = " << nread << ", content = " << std::string(bp.c_str(), nread);
-        if (r != 0) {
-            TR << "read failure";
-            pbl->clear();
-            return;
-        }
-/*
-        // append zeros
-        const int rem = KVS_OBJECT_SPLIT_SIZE - nread;
-        if (rem > 0) {
-            TR << "zeroed";
-            memset(dst + nread, 0, rem);
-        }
-*/
-        bp.set_length(nread);
-  //      TR << "bp content: pg " << pgid << ", bytes = " << bp.length() << ", content = " << std::string(bp.c_str(),bp.length());
-
-        pbl->push_back(std::move(bp));
-
-
-//        TR << "pbl content: pg " << pgid << ", bytes = " << pbl->length() << ", content = " << std::string(pbl->c_str(),pbl->length());
-
-        //pbl->append(std::move(ptr));
-        o->pending_stripes[offset] = *pbl;
-    } else {
-        *pbl = p->second;
-        //TR << "cached pbl content: bytes = " << pbl->length() << ", content = " << std::string(pbl->c_str(),pbl->length());
-    }
-}
-void KvsStore::_do_write_stripe(KvsTransContext *txc, OnodeRef o,
-                                uint64_t offset, bufferlist& bl)
-{
-    o->pending_stripes[offset] = bl;
-
-    const int pgid = (offset >> KVS_OBJECT_SPLIT_SHIFT);
-
-    char *data = (char*)malloc(bl.length());
-    if (bl.length() > 0) {
-        memcpy(data, bl.c_str(), bl.length());
-    }
-
-    db.add_userdata(&txc->ioc, o->oid, (char*)data, bl.length(), pgid);
-
-    //newbl->claim_append(bl);
-    //const char *data = (newbl->length() == 0)? empty:newbl->c_str();
-
-    //TR << "write content: pg " <<  pgid  << ", bytes = " << newbl->length() << ", content = " << std::string(newbl->c_str(), std::min(14, (int)newbl->length()));
-}
-
 
 void KvsStore::_do_remove_stripe(KvsTransContext *txc, OnodeRef o, uint64_t offset)
 {
-    o->pending_stripes.erase(offset);
+    auto it = o->pending_stripes.find(offset);
+    if (it != o->pending_stripes.end()) {
+        kvs_stripe *stripe = it->second;
+        o->pending_stripes.erase(it);
+        delete stripe;
+    }
+
     db.rm_data(&txc->ioc, o->oid, (offset >> KVS_OBJECT_SPLIT_SHIFT));
 }
 
@@ -2673,26 +2570,23 @@ int KvsStore::_do_read(OnodeRef o,uint64_t offset,size_t length,bufferlist& bl,u
 
     stripe_off = offset % stripe_size;
     while (length > 0) {
-        bufferlist stripe;
-        _do_read_stripe(o, offset - stripe_off, &stripe);
-        TR << "_do_read - read stripe: hash = " << ceph_str_hash_linux(stripe.c_str(), stripe.length()) <<", length = " << stripe.length();
-        if (stripe.length() < 20) {
-            TR << "DEBUG - read stripe content = " <<  std::string(stripe.c_str(), stripe.length());
-        }
-        dout(30) << __func__ << " stripe " << offset - stripe_off << " got "
-                 << stripe.length() << dendl;
+        bool cachehit;
+
+        kvs_stripe *stripe = get_stripe_for_read(o, offset - stripe_off, cachehit);
+        if (stripe == 0) return -ENOENT;
+
+        TR << "_do_read - read stripe: hash = " << ceph_str_hash_linux(stripe->buffer, stripe->length()) <<", length = " << stripe->length();
+
         unsigned swant = std::min<unsigned>(stripe_size - stripe_off, length);
-        if (stripe.length()) {
-            if (swant == stripe.length()) {
-                bl.claim_append(stripe);
+        if (stripe->length()) {
+            if (swant == stripe->length()) {
+                bl.append(stripe->buffer, swant);
                 dout(30) << __func__ << " taking full stripe" << dendl;
             } else {
                 unsigned l = 0;
-                if (stripe_off < stripe.length()) {
-                    l = std::min<uint64_t>(stripe.length() - stripe_off, swant);
-                    bufferlist t;
-                    t.substr_of(stripe, stripe_off, l);
-                    bl.claim_append(t);
+                if (stripe_off < stripe->length()) {
+                    l = std::min<uint64_t>(stripe->length() - stripe_off, swant);
+                    bl.append(stripe->buffer + stripe_off, l);
                     dout(30) << __func__ << " taking " << stripe_off << "~" << l << dendl;
                 }
                 if (l < swant) {
@@ -2703,6 +2597,11 @@ int KvsStore::_do_read(OnodeRef o,uint64_t offset,size_t length,bufferlist& bl,u
         } else {
             dout(30) << __func__ << " generating " << swant << " zeros" << dendl;
             bl.append_zero(swant);
+        }
+        if (!cachehit)
+            delete stripe;
+        else {
+            o->flush_lock.unlock();
         }
         offset += swant;
         length -= swant;
@@ -3008,7 +2907,7 @@ void KvsStore::_kv_finalize_thread() {
 			kv_committed.swap(kv_committing_to_finalize);
 			l.unlock();
 
-            TR << "kv_finalize-start: # of transactions " << kv_committed.size();
+            //TR << "kv_finalize-start: # of transactions " << kv_committed.size();
             //int num = 0;
             for (KvsTransContext *txc: kv_committed) {
                 //TR << "transaction #" << num++ << ", " << (void*) txc << ": IO finished";
@@ -3022,8 +2921,24 @@ void KvsStore::_kv_finalize_thread() {
 				KvsTransContext *txc = ordered_txc.front();
 
 				// clear write buffers
-                for (set<OnodeRef>::iterator p = txc->onodes.begin(); p != txc->onodes.end();++p) {
-                    (*p)->clear_pending_stripes();
+
+                // decrease flushing count
+                for (auto ls : { &txc->onodes, &txc->modified_objects }) {
+                    for (auto& o : *ls) {
+                        {
+                            std::lock_guard<std::mutex> l(o->flush_lock);
+                            o->flush_txns.erase(txc);
+                        }
+
+                        TR << o->oid << "decrease flush count " << o->flushing_count.load() -1;
+                        dout(20) << __func__ << " onode " << o << " had " << o->flushing_count << dendl;
+                        if (--o->flushing_count == 0 && o->waiting_count.load()) {
+                            TR << o->oid << "notify ";
+                            std::lock_guard l(o->flush_lock);
+                            o->flush_cond.notify_all();
+                            o->clear_pending_stripes();
+                        }
+                    }
                 }
 
                 //TR << "transactions " << (void*)txc << ":  clean up ";
@@ -3287,12 +3202,91 @@ int KvsStore::_write(KvsTransContext *txc, CollectionRef &c, OnodeRef &o,
 		uint64_t offset, size_t length, bufferlist &bl, uint32_t fadvise_flags) {
 	FTRACE
 
-	TR << "_write: start - oid " << o->oid << ", onode size " << o->onode.size << ", offset " << offset << ", length " << length << ", hash = " << ceph_str_hash_linux(bl.c_str(), bl.length());
+	TR << ">> write: start - oid " << o->oid << ", onode size " << o->onode.size << ", offset " << offset << ", length " << length << ", hash = " << ceph_str_hash_linux(bl.c_str(), bl.length());
     int r = _do_write(txc, o, offset, length, bl, fadvise_flags);
     txc->write_onode(o);
 
-    TR << "_write: finished - oid " << o->oid << ", onode size " << o->onode.size << ", offset " << offset << ", length " << length << ", hash = " << ceph_str_hash_linux(bl.c_str(), bl.length());
+    TR << ">> write: finished - oid " << o->oid << ", onode size " << o->onode.size << ", offset " << offset << ", length " << length << ", hash = " << ceph_str_hash_linux(bl.c_str(), bl.length());
 	return r;
+}
+
+kvs_stripe* KvsStore::get_stripe_for_write(OnodeRef o,int stripe_off) {
+    auto it = o->pending_stripes.find(stripe_off);
+    if (it == o->pending_stripes.end()) {
+        kvs_stripe *stripe = new kvs_stripe((stripe_off >> KVS_OBJECT_SPLIT_SHIFT));
+        o->pending_stripes[stripe_off] = stripe;
+        return stripe;
+    } else {
+        return it->second;
+    }
+}
+
+kvs_stripe* KvsStore::get_stripe_for_read(OnodeRef o, int stripe_off, bool &cachehit) {
+    auto it = o->pending_stripes.find(stripe_off);
+    if (it == o->pending_stripes.end()) {
+        kvs_stripe *stripe = new kvs_stripe((stripe_off >> KVS_OBJECT_SPLIT_SHIFT));
+        int r = db.read_block(o->oid, stripe->pgid, stripe->buffer, stripe->len);
+        if (r != 0) {
+            delete stripe;
+            return 0;
+        }
+
+        cachehit = false;
+        return stripe;
+    } else {
+        cachehit = true;
+        o->flush_lock.lock();
+        return it->second;
+    }
+}
+
+
+kvs_stripe* KvsStore::get_stripe_for_rmw(OnodeRef o, int stripe_off) {
+    auto it = o->pending_stripes.find(stripe_off);
+    if (it == o->pending_stripes.end()) {
+        kvs_stripe *stripe = new kvs_stripe((stripe_off >> KVS_OBJECT_SPLIT_SHIFT));
+        int r = db.read_block(o->oid, stripe->pgid, stripe->buffer, stripe->pos);
+        if (r != 0) {
+            stripe->clear();
+        } else {
+
+        }
+
+        o->pending_stripes[stripe_off] = stripe;
+        return stripe;
+    } else {
+        return it->second;
+    }
+}
+
+void KvsStore::_do_write_stripe(KvsTransContext *txc, OnodeRef o, kvs_stripe *stripe)
+{
+    TR << "write stripe: pageid = " << stripe->pgid << ", pos = " << stripe->get_pos();
+    db.add_userdata(&txc->ioc, o->oid, stripe->buffer, stripe->get_pos(), stripe->pgid);
+}
+
+kvs_stripe * KvsStore::_write_stripe(OnodeRef o, bufferlist& orig_bl, uint64_t dataoff, const uint64_t stripeoff, const int64_t off, const uint64_t use, const bool need_read)
+{
+    kvs_stripe *stripe;
+    if (need_read) {
+        stripe = get_stripe_for_rmw(o, stripeoff);
+        uint32_t prev_position = stripe->get_pos();
+        stripe->set_pos(off);
+        stripe->append(orig_bl, dataoff, use);
+
+        if (stripe->get_pos() < prev_position) {
+            stripe->set_pos(prev_position);
+        }
+
+    } else {
+        stripe = get_stripe_for_write(o, stripeoff);
+        if (off)
+            stripe->append_zero(off);
+
+        stripe->append(orig_bl, dataoff, use);
+    }
+
+    return stripe;
 }
 
 int KvsStore::_do_write(KvsTransContext *txc,
@@ -3301,10 +3295,12 @@ int KvsStore::_do_write(KvsTransContext *txc,
                       bufferlist& orig_bl,
                       uint32_t fadvise_flags)
 {
-    int r = 0;
+  
+  TR << ">> do_write: " << o->oid << " off " << offset << "~ len " << length<< " cursize " << o->onode.size;
 
-    TR << o->oid << " " << offset << "~" << length<< " - have " << o->onode.size
-             << " bytes, oid " << o->oid;
+    static const uint64_t stripe_size = KVS_OBJECT_SPLIT_SIZE;
+
+    int r = 0;
 
     o->exists = true;
 
@@ -3312,79 +3308,35 @@ int KvsStore::_do_write(KvsTransContext *txc,
         return 0;
     }
 
-    const uint64_t stripe_size = KVS_OBJECT_SPLIT_SIZE;
+    uint32_t startpage_id  = offset / stripe_size;
+    uint32_t endpage_id    = (offset + length-1) / stripe_size;
+    uint64_t data_off = 0;
+    uint32_t newend_off = 0;
+    for (uint32_t i = startpage_id; i <= endpage_id; i++) {
+        const uint64_t stripeoff     = i << KVS_OBJECT_SPLIT_SHIFT;
+        const uint64_t curstripesize = std::min(o->onode.size - stripeoff, stripe_size);
+        const int64_t  off           = (offset > 0)? offset - stripeoff:0;
+        const uint64_t use           = std::min(length, stripe_size - off);
+        const uint64_t need_read = (stripeoff < o->onode.size) && ( (off > 0) || (off + use < curstripesize) );   //bool need_read = (there is a block written ) && (off > 0) && (off + use < currentstripsize );
 
-    unsigned bl_off = 0;
-    while (length > 0) {
-        uint64_t offset_rem = offset % stripe_size;     // remaining data
-        uint64_t end_rem = (offset + length) % stripe_size;
-        if (offset_rem == 0 && end_rem == 0) {  // offset & length are aligned
-            bufferlist bl;
-            bl.substr_of(orig_bl, bl_off, stripe_size);
-            dout(30) << __func__ << " full stripe " << offset << dendl;
-            _do_write_stripe(txc, o, offset, bl);
-            offset += stripe_size;
-            length -= stripe_size;
-            bl_off += stripe_size;
-            continue;
-        }
-        uint64_t stripe_off = offset - offset_rem;
-        bufferlist prev;
-        prev.clear();
-        TR << "stript off " << stripe_off << ", length " << length;
-        //bool noread = (offset == 0 && o->onode.size == length) || (o->onode.size == offset);
-        if (stripe_off < o->onode.size && (stripe_off > 0 || (length < stripe_size))) {
-            _do_read_stripe(o, stripe_off, &prev);
-            dout(20) << __func__ << " read previous stripe " << stripe_off
-                     << ", got " << prev.length() << dendl;
+        kvs_stripe *stripe = _write_stripe(o,orig_bl, data_off, stripeoff, off, use, need_read);
+        newend_off = stripeoff + stripe->get_pos();
 
-            if (prev.length() > 0)
-                TR << "read stripe content = " << std::string(prev.c_str(), prev.length()) << ", length = " << prev.length();
-        }
-        bufferlist bl;
-        if (offset_rem) {
-            unsigned p = std::min<uint64_t>(prev.length(), offset_rem);
-            if (p) {
-                TR << __func__ << " reuse leading " << p << " bytes";
-                bl.substr_of(prev, 0, p);
-            }
-            if (p < offset_rem) {
-                TR << __func__ << " add leading " << offset_rem - p << " zeros" ;
-                bl.append_zero(offset_rem - p);
-            }
-        }
-        unsigned use = stripe_size - offset_rem;
-        if (use > length)
-            use -= stripe_size - end_rem;
-        dout(20) << __func__ << " using " << use << " for this stripe" << dendl;
-        bufferlist t;
-        t.substr_of(orig_bl, bl_off, use);
-        bl.claim_append(t);
-        bl_off += use;
-        if (end_rem) {
-            if (end_rem < prev.length()) {
-                unsigned l = prev.length() - end_rem;
-                dout(20) << __func__ << " reuse trailing " << l << " bytes" << dendl;
-                bufferlist t;
-                t.substr_of(prev, end_rem, l);
-                bl.claim_append(t);
-            }
-        }
-        dout(30) << " writing:\n";
-                bl.hexdump(*_dout);
-                *_dout << dendl;
-        _do_write_stripe(txc, o, stripe_off, bl);
-        offset += use;
+        _do_write_stripe(txc, o, stripe);
+
+        offset -= off;
         length -= use;
+        data_off += use;
     }
 
-    if (offset > o->onode.size) {
+ 
+    if (newend_off > o->onode.size) {
         dout(20) << __func__ << " extending size to " << offset + length
-                 << dendl;
-        o->onode.size = offset;
+        << dendl;
+        o->onode.size = newend_off;
     }
 
-    return r;
+     return r;
 
 }
 
@@ -3402,29 +3354,23 @@ int KvsStore::_do_zero(KvsTransContext *txc, CollectionRef &c, OnodeRef &o,
         uint64_t stripe_off = pos % stripe_size;
         while (pos < offset + length) {
             if (stripe_off || end - pos < stripe_size) {
-                bufferlist stripe;
-                _do_read_stripe(o, pos - stripe_off, &stripe);
-                dout(30) << __func__ << " stripe " << pos - stripe_off << " got "
-                         << stripe.length() << dendl;
-                bufferlist bl;
-                bl.substr_of(stripe, 0, std::min<uint64_t>(stripe.length(), stripe_off));
+
+                kvs_stripe *stripe = get_stripe_for_rmw(o, pos - stripe_off);
+
+                stripe->set_pos(std::min<uint32_t>(stripe->length(), (uint32_t)stripe_off));
+
                 if (end >= pos - stripe_off + stripe_size ||
                     end >= o->onode.size) {
-                    dout(20) << __func__ << " truncated stripe " << pos - stripe_off
-                             << " to " << bl.length() << dendl;
                 } else {
-                    auto len = end - (pos - stripe_off + bl.length());
-                    bl.append_zero(len);
-                    dout(20) << __func__ << " adding " << len << " of zeros" << dendl;
-                    if (stripe.length() > bl.length()) {
-                        unsigned l = stripe.length() - bl.length();
-                        bufferlist t;
-                        t.substr_of(stripe, stripe.length() - l, l);
-                        dout(20) << __func__ << " keeping tail " << l << " of stripe" << dendl;
-                        bl.claim_append(t);
+
+                    auto len = end - (pos - stripe_off + stripe->get_pos());
+                    stripe->append_zero(len);
+                    if (stripe->length() > stripe->get_pos()) {
+                        unsigned l = stripe->length() - stripe->get_pos();
+                        stripe->inc_pos(l);
                     }
                 }
-                _do_write_stripe(txc, o, pos - stripe_off, bl);
+                _do_write_stripe(txc, o, stripe);
                 pos += stripe_size - stripe_off;
                 stripe_off = 0;
             } else {
@@ -3434,7 +3380,7 @@ int KvsStore::_do_zero(KvsTransContext *txc, CollectionRef &c, OnodeRef &o,
             }
         }
     }
-    if (offset + length > o->onode.size) {
+    if (length > 0 && offset + length > o->onode.size) {
         o->onode.size = offset + length;
         dout(20) << __func__ << " extending size to " << offset + length
                  << dendl;
@@ -3463,15 +3409,12 @@ int KvsStore::_do_truncate(KvsTransContext *txc,  OnodeRef o,
         uint64_t stripe_off = pos % stripe_size;
         while (pos < o->onode.size) {
             if (stripe_off) {
-                bufferlist stripe;
-                _do_read_stripe(o, pos - stripe_off, &stripe);
-                dout(30) << __func__ << " stripe " << pos - stripe_off << " got "
-                         << stripe.length() << dendl;
-                bufferlist t;
-                t.substr_of(stripe, 0, std::min<uint64_t>(stripe_off, stripe.length()));
-                _do_write_stripe(txc, o, pos - stripe_off, t);
-                dout(20) << __func__ << " truncated stripe " << pos - stripe_off
-                         << " to " << t.length() << dendl;
+                kvs_stripe *stripe = get_stripe_for_rmw(o, pos - stripe_off);
+
+                stripe->set_pos(std::min<uint32_t>(stripe_off, stripe->length()));
+
+                _do_write_stripe(txc, o, stripe);
+
                 pos += stripe_size - stripe_off;
                 stripe_off = 0;
             } else {
@@ -3630,7 +3573,6 @@ int KvsStore::_read_data(KvsTransContext *txc, const ghobject_t &oid, uint64_t o
 	}
 
 	int r = datao->read(offset, length, bl, [&] (char* data, int pageid, uint32_t &nread)->int  {
-        //TR << "read block: oid " << oid << ", pageid " << pageid << ", into " << (void *)data;
         return db.read_block(oid, pageid, data, nread);
 	});
 
@@ -3642,11 +3584,9 @@ int KvsStore::_read_data(KvsTransContext *txc, const ghobject_t &oid, uint64_t o
             if (it != pending_datao.end()) {
                 KvsStoreDataObject *d = it->second;
                 pending_datao.erase(it);
-                //TR << "Delete pending DAO on reads " << (void*)d;
 		        delete d;
-            } else {
-                //TR << "Delete local DAO on reads"  << (void*)datao;
-                delete datao;
+            } else{ 
+                 delete datao;
             }
         }
 	}
@@ -3666,7 +3606,6 @@ int KvsStore::omap_get_values(CollectionHandle &c_, const ghobject_t &oid,
 		const set<string> &keys, map<string, bufferlist> *out) {
 	FTRACE
 
-	//TR << "omap get values oid = " << oid;
     //TRBACKTRACE
 
 	KvsCollection *c = static_cast<KvsCollection*>(c_.get());
@@ -3675,7 +3614,7 @@ int KvsStore::omap_get_values(CollectionHandle &c_, const ghobject_t &oid,
 
 	for (const std::string &p : keys) {
 	    if (o->onode.omaps.find(p) != o->onode.omaps.end()) {
-            //TR << "omap get values key  = " << p;
+            
             int ret = db.read_omap(oid, o->onode.lid, p, (*out)[p]);
             if (ret != 0) {
                 derr << "omap_get_values failed: ret = " << ret << dendl;
